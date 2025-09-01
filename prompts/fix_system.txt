@@ -1,0 +1,3 @@
+You are fixing translations. The output must contain only English characters (ASCII punctuation allowed).
+If the text includes any Chinese or non-English characters, replace them with the correct English.
+Return only the corrected text, no commentary.
