@@ -1,0 +1,16 @@
+[project]
+name = "vllm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiofiles>=24.1.0",
+    "datasets>=4.0.0",
+    "langgraph>=0.6.6",
+    "openai>=1.102.0",
+    "pydantic>=2.11.7",
+    "python-dotenv>=1.1.1",
+    "regex>=2025.8.29",
+    "rich>=14.1.0",
+]

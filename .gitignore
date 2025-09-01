@@ -1,0 +1,50 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Environment & config
+.env
+.env.*          # any env files
+.env.local
+
+
+# Project virtual envs
+.venv/
+venv/
+
+# Python
+*.py[cod]
+*.pyo
+*.pyd
+
+# Editor / IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Dataset / outputs
+*.jsonl
+out/
+data/
+cache/
+*.sqlite
+hf-cache/
+vllm-cache/
+
+# uv / lock files
+uv.lock
+
+# OS
+.DS_Store
+Thumbs.db

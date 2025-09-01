@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.8.5.post1
+    container_name: vllm-qwen3
+    ports:
+      - "8000:8000"
+    environment:
+      # --- Auth (required): clients must send this as Bearer <token> ---
+      - VLLM_API_KEY=my-token-1234
+
+      # HF access (optional)
+      # - HF_TOKEN=${HF_TOKEN:-}
+      - VLLM_LOGGING_LEVEL=INFO
+
+      # *** Select GPU #1 ***
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+    volumes:
+      # Quote Windows paths
+      - "T:\\hf-cache\\hub:/root/.cache/huggingface/hub"
+      - "T:\\vllm-cache:/root/.cache/vllm"
+    command: >
+      --model Qwen/Qwen3-4B-Instruct-2507-FP8
+      --dtype auto
+      --gpu-memory-utilization 0.92
+      --max-model-len 8192
+      --max-num-seqs 48
+    # This is how Compose requests GPUs (works with Docker Desktop + WSL2)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["GPU-9997ab17-e4ca-cd9f-3786-01659de406f0"]      # <-- pick GPU #1
+              capabilities: ["gpu"]
+
