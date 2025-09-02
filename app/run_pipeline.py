@@ -61,7 +61,9 @@ async def main():
     with Progress("[progress.description]{task.description}", BarColumn(), "{task.completed}", TimeElapsedColumn()) as prog:
         t = prog.add_task("Translating…", total=None)
         for rec in src_iter:
-            tasks.append(asyncio.create_task(worker(rec)))
+            recs = rec["text"].split("<|im_end|> <|im_start|>")
+            for rec in recs:
+                tasks.append(asyncio.create_task(worker({"text": "translate CN/ZH to EN: " + rec.replace("<|im_end|>", "").replace("<|im_start|>", "").strip()})))
             total += 1
             if total % 2000 == 0:
                 prog.update(t, completed=total)
