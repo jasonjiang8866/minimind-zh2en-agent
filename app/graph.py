@@ -50,7 +50,7 @@ class Nodes:
 
     async def write_jsonl(self, state: RecordState) -> RecordState:
         # Output schema mirrors the input but replaces "text" with English text under "text_en"
-        out_obj = {"text": state["translated"]}
+        out_obj = {"text": "<|im_start|>" + state["translated"] + "<|im_end|>"}
         # out_obj = {**state["record"], "text_en": state["translated"]}
         line = (await asyncio.to_thread(lambda: __import__("json").dumps(out_obj, ensure_ascii=False))) + "\n"
         async with self.write_lock:
