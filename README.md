@@ -1,6 +1,22 @@
 # MiniMind Chinese-to-English Translation Agent
 
-A comprehensive Chinese-to-English translation system that combines vLLM model deployment with an intelligent agent workflow. This project provides both a scalable vLLM deployment setup and a sophisticated translation agent that can process Chinese text with quality validation and automatic fixing.
+A comprehensive Chinese→English translation system that combines a local vLLM deployment with an intelligent, auditable agent workflow.  
+This repo provides a scalable vLLM deployment, a LangGraph-based translation pipeline with multi-pass validation/fixing, and tools to produce a **MiniMind-style English dataset** suitable for pretraining, instruction tuning, RAG indexing and multilingual benchmarking.
+
+## Motivation — why this project exists
+
+Although `jingyaogong/minimind_dataset` is an impressive Chinese dataset, many teams, benchmarks, and models prefer or require high-quality English instruction-style data. This project builds a faithful English counterpart that:
+
+- Preserves original metadata, conversation structure, and instruction intent so comparisons to the Chinese original remain valid.
+- Enables English-only teams and benchmark suites to use MiniMind-style content without language barriers.
+- Helps research on language-specific behavior, bias, and cross-lingual performance by providing a parallel dataset.
+- Ships a reusable, auditable pipeline (vLLM + LangGraph + validation) that dataset maintainers can adopt or adapt.
+
+**Goals**
+- Produce high-fidelity English dataset for pretraining and instruction tuning.
+- Maintain provenance and licensing clarity.
+- Flag low-confidence translations for human review.
+- Provide JSONL output compatible with standard LLM training stacks.
 
 ## 🚀 Features
 
