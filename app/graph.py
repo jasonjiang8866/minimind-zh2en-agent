@@ -32,7 +32,12 @@ class Nodes:
             state["needs_fix"] = False
             return state
         # translate only if needed
-        out = await self.client.chat(self.translator_sys, text, max_tokens=5120) or ""
+        texts = text.split("<|im_end|> <|im_start|>")
+        out_array = []
+        for single_text in texts:
+            single_out = await self.client.chat(self.translator_sys, "translate CN/ZH to EN: " + single_text.replace("<|im_end|>", "").replace("<|im_start|>", "").strip(), max_tokens=5120) or ""
+            out_array.append(single_out.strip())
+        out = "<|im_start|>" + "<|im_end|> <|im_start|>".join(out_array)  + "<|im_end|>"
         state["translated"] = out.strip()
         state["needs_fix"] = has_chinese(state["translated"])
         return state
@@ -43,14 +48,18 @@ class Nodes:
 
     async def fix_pass(self, state: RecordState) -> RecordState:
         state["attempts"] = int(state.get("attempts", 0)) + 1
-        fixed = await self.client.chat(self.fixer_sys, state["translated"], max_tokens=5120) or ""
-        state["translated"] = fixed.strip()
+        texts = state["translated"].split("<|im_end|> <|im_start|>")
+        fixed_array = []
+        for single_text in texts:
+            single_fixed = await self.client.chat(self.fixer_sys, "translate CN/ZH to EN: " + single_text.replace("<|im_end|>", "").replace("<|im_start|>", "").strip(), max_tokens=5120) or ""
+            fixed_array.append(single_fixed.strip())
+        state["translated"] = "<|im_start|>" + "<|im_end|> <|im_start|>".join(fixed_array)  + "<|im_end|>"
         state["needs_fix"] = has_chinese(state["translated"])
         return state
 
     async def write_jsonl(self, state: RecordState) -> RecordState:
         # Output schema mirrors the input but replaces "text" with English text under "text_en"
-        out_obj = {"text": "<|im_start|>" + state["translated"] + "<|im_end|>"}
+        out_obj = {"text":  state["translated"]}
         # out_obj = {**state["record"], "text_en": state["translated"]}
         line = (await asyncio.to_thread(lambda: __import__("json").dumps(out_obj, ensure_ascii=False))) + "\n"
         async with self.write_lock:
