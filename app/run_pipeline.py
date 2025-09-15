@@ -64,6 +64,9 @@ async def main():
             # recs = rec["text"].split("<|im_end|> <|im_start|>")
             # for rec in recs:
             # tasks.append(asyncio.create_task(worker({"text": "translate CN/ZH to EN: " + rec.replace("<|im_end|>", "").replace("<|im_start|>", "").strip()})))
+            if total < settings.checkpoint: # skip to checkpoint
+                total += 1
+                continue
             tasks.append(asyncio.create_task(worker(rec)))
             total += 1
             if total % 2000 == 0:
