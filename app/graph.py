@@ -35,7 +35,7 @@ class Nodes:
         texts = text.split("<|im_end|> <|im_start|>")
         out_array = []
         for single_text in texts:
-            single_out = await self.client.chat(self.translator_sys, "translate CN/ZH to EN: " + single_text.replace("<|im_end|>", "").replace("<|im_start|>", "").strip(), max_tokens=5120) or ""
+            single_out = await self.client.chat(self.translator_sys, "translate CN/ZH to EN: " + single_text.replace("<|im_end|>", "").replace("<|im_start|>", "").strip(), max_tokens=512) or ""
             out_array.append(single_out.strip())
         out = "<|im_start|>" + "<|im_end|> <|im_start|>".join(out_array)  + "<|im_end|>"
         state["translated"] = out.strip()
@@ -51,7 +51,7 @@ class Nodes:
         texts = state["translated"].split("<|im_end|> <|im_start|>")
         fixed_array = []
         for single_text in texts:
-            single_fixed = await self.client.chat(self.fixer_sys, "translate CN/ZH to EN: " + single_text.replace("<|im_end|>", "").replace("<|im_start|>", "").strip(), max_tokens=5120) or ""
+            single_fixed = await self.client.chat(self.fixer_sys, "translate CN/ZH to EN: " + single_text.replace("<|im_end|>", "").replace("<|im_start|>", "").strip(), max_tokens=512) or ""
             fixed_array.append(single_fixed.strip())
         state["translated"] = "<|im_start|>" + "<|im_end|> <|im_start|>".join(fixed_array)  + "<|im_end|>"
         state["needs_fix"] = has_chinese(state["translated"])
