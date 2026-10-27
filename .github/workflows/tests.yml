@@ -5,6 +5,7 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       matrix:
         python: ['3.12', '3.13']

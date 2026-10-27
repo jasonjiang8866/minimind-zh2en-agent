@@ -285,6 +285,43 @@ interruptions, resume, duplicate input rows, reordered completions, metadata ret
 input changes, legacy checkpoints and ledger corruption. CI runs Python 3.12 and 3.13
 using the hash-pinned requirements. These tests do not replace a real GPU/vLLM load test.
 
+`tests/test_integrity_scale.py` adds two default CI regressions:
+
+- **1,000 records, 16 workers:** an in-process HTTP mock service exercises the real
+  OpenAI SDK and retry loop with deterministic 429, 503, read-timeout and empty
+  completion faults. Each fault type has transient recovery and retry exhaustion.
+  Two incomplete runs retain every failed row, publish no new training data and
+  preserve a synthetic stale output byte-for-byte. Recovery and a subsequent no-op
+  resume verify exact per-record HTTP call counts, including no retranslations of
+  committed successes. Overlapping requests and out-of-order completion are asserted.
+- **10,017 records:** the real pipeline, LangGraph and SQLite run with a lightweight
+  deterministic model client. Exact duplicate records cross positions 9,999–10,001;
+  failures before and after the historical 10,000-row skip boundary recover without
+  skipping or deduplicating inputs. Every pair's contiguous zero-based ID, full source
+  record SHA-256, metadata, status and record-attempt count is checked against both
+  the source and SQLite. Source/pair/output counts and final JSONL contents must agree.
+
+Both tests use temporary synthetic data, retain SQLite's FULL synchronous durability,
+and have a 120-second per-scenario async timeout. Asyncio debug tracing is disabled
+only for these scale tests. HTTP retry delays are replaced with zero for determinism;
+individual retries still execute and their exact counts are asserted. Injected read
+timeouts test SDK/application error handling, not socket deadline enforcement.
+
+An optional **20,000-record HTTP** stress test reuses the same strict acceptance
+checks and is skipped in normal CI. Run it alone with:
+
+```bash
+RUN_INTEGRITY_STRESS=1 INTEGRITY_STRESS_RECORDS=20000 \
+  uv run --locked python -m unittest discover -s tests -p test_integrity_scale.py \
+  -k test_optional_large_http_stress -v
+```
+
+The optional count must be a multiple of 20 between 1,000 and 100,000; its async
+timeout is 900 seconds. Increase scale only on a disposable local workspace with
+enough time and disk space. These are offline accounting/recovery tests: they open
+no network sockets, download no model, use no GPU or enterprise data, and provide
+no evidence about real vLLM throughput, GPU memory pressure or translation quality.
+
 
 ### Test vLLM Connection
 
