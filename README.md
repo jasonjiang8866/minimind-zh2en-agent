@@ -98,7 +98,7 @@ curl http://localhost:8000/v1/models \
 pip install -r requirements.txt
 
 # Or using uv (recommended)
-uv sync
+uv sync --locked
 ```
 
 ### 2. Environment Configuration
@@ -116,9 +116,14 @@ CONCURRENCY=10
 OUTPUT_PATH=./out/pretrain_hq.en.jsonl
 INPUT_FILE=pretrain_hq.jsonl
 
-# Optional: Dataset Configuration (if using HuggingFace datasets)
-DATASET_NAME=jingyaogong/minimind_dataset
-DATASET_SPLIT=train
+# Retry and validation policy
+REQUEST_ATTEMPTS=6
+REQUEST_TIMEOUT=120
+RETRY_BASE=1
+RETRY_MAX=60
+MAX_TOKENS=2048
+MAX_FIXES=2
+# Remove any old CHECK_POINT setting; resume is automatic.
 ```
 
 ## ⚙️ Configuration
@@ -132,7 +137,13 @@ The agent supports the following configuration options:
 | `MODEL_ID` | `Qwen/Qwen3-4B-Instruct-2507-FP8` | Model identifier |
 | `CONCURRENCY` | `10` | Number of concurrent translation tasks |
 | `OUTPUT_PATH` | `./out/pretrain_hq.en.jsonl` | Output file path |
-| `INPUT_FILE` | `pretrain_hq.jsonl` | Input JSONL file path |
+| `INPUT_FILE` | `pretrain_hq.jsonl` | Local input JSONL file path |
+| `REQUEST_ATTEMPTS` | `6` | Maximum HTTP attempts per translation/correction segment, including the first |
+| `REQUEST_TIMEOUT` | `120` | OpenAI SDK request timeout in seconds |
+| `RETRY_BASE` / `RETRY_MAX` | `1` / `60` | Exponential full-jitter backoff base/cap in seconds; Retry-After is honored up to the cap |
+| `MAX_TOKENS` | `2048` | Output token budget per segment; length-truncated responses fail validation |
+| `MAX_FIXES` | `2` | Maximum correction passes for residual Chinese |
+| `CHECK_POINT` | `0` | Legacy skip control: nonzero values are rejected to prevent data loss |
 
 ## 🎯 Usage
 
@@ -165,7 +176,87 @@ The agent implements a sophisticated workflow:
 2. **Translation**: Translates Chinese text to English using the system prompt
 3. **Validation**: Verifies that translation doesn't contain Chinese characters
 4. **Fixing**: If Chinese characters remain, applies a fixing pass
-5. **Output**: Writes the final English text to the output file
+5. **Durable result**: Commits the source/translation pair to SQLite; failures stay explicit and retryable
+6. **Publication**: Exports the English JSONL in source order only when every record succeeds
+
+### Completeness, overload recovery, and paired output
+
+The pipeline snapshots and validates the entire local JSONL input before sending requests.
+Every nonblank JSONL record must be an object containing a string `text`; malformed input
+aborts before translation. Empty strings and duplicate records are retained. The zero-based
+`source_id` identifies a record's position among nonblank JSONL records, **not** its text content.
+
+A bounded queue feeds `CONCURRENCY` workers, so the runner never creates a task for every
+input row at once. HTTP 408/409/429, 5xx, connection errors and timeouts retry with exponential
+backoff and jitter. Empty responses and non-`stop` finish reasons also retry. Other HTTP 4xx
+errors fail immediately. Retry exhaustion or residual Chinese after correction marks the
+record **failed**, never successful with blank/original Chinese fallback. Other records can
+finish; the process exits nonzero if any record remains unsuccessful.
+
+For `OUTPUT_PATH=./out/pretrain_hq.en.jsonl`, the artifacts are:
+
+| File | Purpose |
+|---|---|
+| `pretrain_hq.en.jsonl.sqlite` | Durable source snapshot, successful translations, failure details and record-attempt counts; retain for resume |
+| `pretrain_hq.en.jsonl.pairs.jsonl` | Exactly one entry for every source record after a finished/gracefully interrupted run, including failed/pending entries |
+| `pretrain_hq.en.jsonl.summary.json` | `running`, `incomplete`, or `complete`, input SHA-256, total/success/failed/pending counts |
+| `pretrain_hq.en.jsonl` | Final training dataset, published only when all source records have validated translations |
+
+Example successful pair (hash shortened here):
+
+```json
+{"source_id":0,"source_sha256":"...","source":{"text":"你好","category":"greeting"},"text_en":"Hello","status":"success","attempts":1,"error":null}
+```
+
+Failed/pending entries have `text_en: null`; failed entries include an error. `attempts`
+counts completed record attempts across runs, not individual HTTP calls. Source hashes cover
+the canonical full source record, including metadata. Export checks contiguous IDs, source
+hashes, translation validity and equal counts. Training rows preserve the original metadata
+and replace only `text`; row N corresponds to source row N, even when requests finish out of
+order. Plain text remains plain text; existing conversation boundary tokens and standard role
+headers are preserved outside model control.
+
+To resume after overload, an interruption, or a server restart, run the same command again:
+
+```bash
+uv run --locked python -m app.run_pipeline
+```
+
+Only failed/pending records are retried. Completed results are reused, and files are rebuilt
+in source order rather than appended, so reruns do not duplicate rows. SQLite commits each
+result with full synchronous durability. A process crash before a result is committed may
+repeat that model request, but cannot duplicate the final row. An OS file lock rejects a
+second writer using the same output path. Use a local filesystem with reliable SQLite/OS
+locking; retain the SQLite database and any active WAL sidecars together.
+
+The full input-byte hash and model/prompt/token-budget/correction configuration must match
+on resume. Concurrency, retry counts, timeout and endpoint may be changed to recover an
+overloaded server; use the same actual model behind the endpoint. Changed source data or
+translation settings require a new output path. Do not edit the input while a run is active:
+translation uses the validated snapshot.
+
+**Migration from older versions:** remove `CHECK_POINT` (the old default silently skipped
+10,000 rows) and choose a fresh `OUTPUT_PATH`. Old append-only results have no source IDs
+and may be reordered or incomplete, so they are rejected as an automatic resume source.
+Keep them for comparison; regenerate from the complete original input.
+
+Atomic replacement prevents partially written JSONL files. `summary.status == "complete"`
+is the publication signal and is written last; the files are not a multi-file transaction.
+After an abrupt kill, sidecar exports may be stale or absent: rerun to rebuild them from
+SQLite. On a failed resume, an older complete training file can remain on disk; consumers
+must check the summary, not just file existence.
+
+These checks guarantee record accounting and structural completeness, not semantic
+translation accuracy. Review sampled translations separately. Persistently unavailable
+vLLM or invalid completions leave an explicit incomplete run rather than fabricated pairs.
+
+### LangGraph version
+
+The runtime is pinned to **LangGraph 1.2.17**, the latest stable release verified on
+2026-10-27 ([PyPI](https://pypi.org/project/langgraph/1.2.17/),
+[upstream releases](https://github.com/langchain-ai/langgraph/releases)). The existing
+`StateGraph` API remains in use; Python 3.12+ is still required by this project.
+`uv.lock` and hash-pinned `requirements.txt` are regenerated together.
 
 ### Direct API Testing
 
@@ -180,6 +271,20 @@ python test-streaming.py
 ```
 
 ## 🧪 Testing
+
+Run offline regression tests against the real LangGraph and OpenAI SDK packages:
+
+```bash
+uv sync --locked
+uv run --locked python -m unittest discover -s tests -v
+uv pip check
+```
+
+The tests simulate HTTP overload/timeouts, retry exhaustion, invalid completions,
+interruptions, resume, duplicate input rows, reordered completions, metadata retention,
+input changes, legacy checkpoints and ledger corruption. CI runs Python 3.12 and 3.13
+using the hash-pinned requirements. These tests do not replace a real GPU/vLLM load test.
+
 
 ### Test vLLM Connection
 
@@ -223,6 +328,7 @@ print(result)  # Should output English translation
 │   ├── config.py                # Configuration management
 │   ├── detector.py              # Chinese text detection
 │   ├── graph.py                 # LangGraph workflow definition
+│   ├── ledger.py                # Durable pairs, integrity checks and atomic exports
 │   ├── run_pipeline.py          # Main pipeline runner
 │   └── vllm_client.py           # OpenAI-compatible vLLM client
 ├── prompts/                     # System prompts

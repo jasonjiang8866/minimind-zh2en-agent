@@ -1,80 +1,95 @@
-import os, asyncio, json, sys
-from datasets import load_dataset, IterableDataset
-from rich.progress import Progress, BarColumn, TimeElapsedColumn
+import asyncio
+import json
+import logging
+from pathlib import Path
+
+from filelock import FileLock
 from .config import settings
-from .vllm_client import OpenAIClient
 from .graph import build_graph, Nodes
-from .detector import has_chinese
+from .ledger import Ledger
+from .vllm_client import OpenAIClient
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
+ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
-def read_text(path):
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line=line.strip()
-            if not line: 
-                continue
-            yield json.loads(line)
+
+class IncompleteRun(RuntimeError):
+    pass
+
+
+async def run_pipeline(config=settings, client=None):
+    if config.checkpoint != 0:
+        raise ValueError("CHECK_POINT skipping is unsafe. Unset CHECK_POINT; verified ledger resume is automatic.")
+    output = Path(config.output_path).resolve()
+    input_path = Path(config.input_file).resolve()
+    artifacts = [output, *(Path(str(output) + suffix) for suffix in
+                           (".sqlite", ".sqlite-wal", ".sqlite-shm", ".lock", ".pairs.jsonl", ".summary.json"))]
+    if any(input_path == path or (path.exists() and input_path.exists() and path.samefile(input_path)) for path in artifacts):
+        raise ValueError("Input path must not overlap output or recovery files")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # OS lock is released on process exit, including a crash. No stale PID cleanup.
+    with FileLock(str(output) + ".lock", timeout=0):
+        ledger = Ledger(output)
+        owned_client = client is None
+        try:
+            translator = (ROOT / "prompts/translate_system.txt").read_text(encoding="utf-8").strip()
+            fixer = (ROOT / "prompts/fix_system.txt").read_text(encoding="utf-8").strip()
+            ledger.prepare(input_path, {"schema": 1, "model": config.model_id,
+                                       "translator": translator, "fixer": fixer,
+                                       "max_tokens": config.max_tokens, "max_fixes": config.max_fixes})
+            ledger.report("running")
+            if client is None:
+                client = OpenAIClient(config=config)
+            graph = build_graph(Nodes(translator, fixer, client, config.max_tokens), config.max_fixes)
+            queue = asyncio.Queue(maxsize=config.concurrency * 2)
+
+            async def producer():
+                last_id = -1
+                while rows := ledger.pending_after(last_id, config.concurrency * 2):
+                    for record_id, raw in rows:
+                        await queue.put((record_id, raw))
+                        last_id = record_id
+                for _ in range(config.concurrency):
+                    await queue.put(None)
+
+            async def worker():
+                while (item := await queue.get()) is not None:
+                    record_id, raw = item
+                    try:
+                        state = await graph.ainvoke({"text": json.loads(raw)["text"]},
+                                                   {"recursion_limit": 2 * config.max_fixes + 10})
+                    except Exception as error:
+                        # A failed row stays visible and retryable; cancellation
+                        # propagates so interrupted rows remain pending.
+                        ledger.record_result(record_id, error=f"{type(error).__name__}: {error}")
+                        logger.warning("Source record %s failed (%s); retained for resume", record_id, type(error).__name__)
+                    else:
+                        ledger.record_result(record_id, translated=state["translated"])
+
+            finished = False
+            try:
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(producer())
+                    for _ in range(config.concurrency):
+                        group.create_task(worker())
+                finished = True
+            finally:
+                summary = ledger.export(finished)
+            if summary["status"] != "complete":
+                raise IncompleteRun(f"Incomplete translation: {summary}. Rerun with the same input/output to retry unfinished rows.")
+            return summary
+        finally:
+            try:
+                if owned_client and client is not None:
+                    await client.aclose()
+            finally:
+                ledger.close()
+
 
 async def main():
-    # Load prompts
-    with open(os.path.join(ROOT, "prompts", "translate_system.txt"), "r", encoding="utf-8") as f:
-        translate_sys = f.read().strip()
-    with open(os.path.join(ROOT, "prompts", "fix_system.txt"), "r", encoding="utf-8") as f:
-        fix_sys = f.read().strip()
+    summary = await run_pipeline()
+    print(json.dumps(summary))
 
-    client = OpenAIClient()
-    write_lock = asyncio.Lock()
-    nodes = Nodes(translate_sys, fix_sys, settings.output_path, write_lock, client)
-    graph = build_graph(nodes, max_fixes=1)
-
-    # Input stream: either HF dataset or local jsonl
-    src_iter = None
-    if os.path.exists(settings.input_file):
-        src_iter = read_text(settings.input_file)
-    else:
-        sys.exit(f"Input file {settings.input_file} not found")
-        # # Expect lines like {"text": "..."} in pretrain_hq.jsonl
-        # # This dataset’s card shows that format (key "text"). :contentReference[oaicite:0]{index=0}
-        # hf = load_dataset(settings.dataset_name, split=settings.dataset_split, streaming=True)  # IterableDataset
-        # def gen():
-        #     for row in hf:  # each row should have "text"
-        #         yield row
-        # src_iter = gen()
-
-    sem = asyncio.Semaphore(settings.concurrency)
-
-    async def worker(rec):
-        async with sem:
-            state = {"record": rec, "text": rec.get("text","")}
-            # cheap skip: if not Chinese, don't hit the LLM at all
-            if not has_chinese(state["text"]):
-                state["translated"] = state["text"]
-                state["needs_fix"] = False
-                await nodes.write_jsonl(state)
-                return
-            await graph.ainvoke(state)
-
-    # progress
-    tasks = []
-    total = 0
-    with Progress("[progress.description]{task.description}", BarColumn(), "{task.completed}", TimeElapsedColumn()) as prog:
-        t = prog.add_task("Translating…", total=None)
-        for rec in src_iter:
-            # recs = rec["text"].split("<|im_end|> <|im_start|>")
-            # for rec in recs:
-            # tasks.append(asyncio.create_task(worker({"text": "translate CN/ZH to EN: " + rec.replace("<|im_end|>", "").replace("<|im_start|>", "").strip()})))
-            if total < settings.checkpoint: # skip to checkpoint
-                total += 1
-                continue
-            tasks.append(asyncio.create_task(worker(rec)))
-            total += 1
-            if total % 2000 == 0:
-                prog.update(t, completed=total)
-                await asyncio.sleep(0)  # let loop breathe
-        await asyncio.gather(*tasks)
-        prog.update(t, completed=total)
-    await client.aclose()
 
 if __name__ == "__main__":
     asyncio.run(main())
