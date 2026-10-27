@@ -42,8 +42,14 @@ cache/
 hf-cache/
 vllm-cache/
 
-# uv / lock files
-uv.lock
+# Translation recovery sidecars
+*.sqlite-wal
+*.sqlite-shm
+*.jsonl.lock
+*.jsonl.summary.json
+*.tmp
+
+# uv.lock is tracked for reproducible installs
 
 # OS
 .DS_Store
